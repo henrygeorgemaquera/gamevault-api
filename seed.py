@@ -4,7 +4,9 @@ from sqlmodel import Session, select
 
 from app.config.database import engine
 from app.models.catalog import Classification, Game
+from app.models.order import Order, OrderItem
 from app.models.user import User
+from app.models.wishlist import WishlistItem
 from app.utils.security import hash_password, utcnow
 
 
@@ -66,7 +68,6 @@ def run_seed() -> None:
                 db.refresh(c)
 
             games = [
-                # Juego 1: Con oferta vigente (25% de descuento activo hoy)
                 Game(
                     title="Elden Ring",
                     description="Un vasto mundo de fantasía oscura donde te aguardan peligros y descubrimientos.",
@@ -80,7 +81,6 @@ def run_seed() -> None:
                     image_url="https://placehold.co/600x800?text=Elden+Ring",
                     classifications=[c_accion, c_rpg, c_aventura],
                 ),
-                # Juego 2: Precio normal sin oferta
                 Game(
                     title="Hollow Knight",
                     description="Forja tu propio camino en Hallownest, un vasto reino en ruinas de insectos y héroes.",
@@ -92,7 +92,6 @@ def run_seed() -> None:
                     image_url="https://placehold.co/600x800?text=Hollow+Knight",
                     classifications=[c_accion, c_indie, c_aventura],
                 ),
-                # Juego 3: Con oferta vigente (40% de descuento activo hoy)
                 Game(
                     title="Baldur's Gate 3",
                     description="Reúne a tu grupo y regresa a los Reinos Olvidados en un relato de compañerismo y traición.",
@@ -106,7 +105,6 @@ def run_seed() -> None:
                     image_url="https://placehold.co/600x800?text=Baldurs+Gate+3",
                     classifications=[c_rpg, c_estrategia, c_aventura],
                 ),
-                # Juego 4: Con oferta VENCIDA
                 Game(
                     title="Cyberpunk 2077",
                     description="RPG de acción y aventura de mundo abierto ambientado en la megalópolis de Night City.",
@@ -120,7 +118,6 @@ def run_seed() -> None:
                     image_url="https://placehold.co/600x800?text=Cyberpunk+2077",
                     classifications=[c_accion, c_rpg],
                 ),
-                # Juego 5: Indie en oferta vigente (20% de descuento)
                 Game(
                     title="Hades",
                     description="Desafía al dios de los muertos y protagoniza una salvaje fuga del Inframundo.",
@@ -134,7 +131,6 @@ def run_seed() -> None:
                     image_url="https://placehold.co/600x800?text=Hades",
                     classifications=[c_accion, c_indie, c_rpg],
                 ),
-                # Juego 6: Eliminado lógicamente (is_active=False, NO debe aparecer en el catálogo público)
                 Game(
                     title="The Day Before (Retirado)",
                     description="Título retirado del catálogo activo para probar soft delete.",
@@ -149,6 +145,74 @@ def run_seed() -> None:
             ]
             db.add_all(games)
             db.commit()
+
+        # Datos semilla de Wishlist y Compras para el reporte de popularidad
+        if db.exec(select(WishlistItem)).first() is None:
+            users = list(db.exec(select(User).where(User.role == "user")).all())
+            all_games = list(db.exec(select(Game)).all())
+            if len(users) >= 2 and len(all_games) >= 3:
+                u1, u2 = users[0], users[1]
+                g1, g2, g3 = all_games[0], all_games[1], all_games[2]
+
+                db.add_all(
+                    [
+                        WishlistItem(user_id=u1.id, game_id=g1.id, created_at=now - timedelta(days=3)),
+                        WishlistItem(user_id=u2.id, game_id=g1.id, created_at=now - timedelta(days=1)),
+                        WishlistItem(user_id=u1.id, game_id=g3.id, created_at=now - timedelta(days=2)),
+                    ]
+                )
+
+                order1 = Order(
+                    user_id=u1.id,
+                    idempotency_key="seed-order-001",
+                    total_amount=42732.5,
+                    status="completed",
+                    created_at=now - timedelta(days=2),
+                )
+                order2 = Order(
+                    user_id=u2.id,
+                    idempotency_key="seed-order-002",
+                    total_amount=33742.5,
+                    status="completed",
+                    created_at=now - timedelta(days=1),
+                )
+                db.add_all([order1, order2])
+                db.commit()
+                db.refresh(order1)
+                db.refresh(order2)
+
+                db.add_all(
+                    [
+                        OrderItem(
+                            order_id=order1.id,
+                            game_id=g1.id,
+                            game_title_snapshot=g1.title,
+                            unit_price_snapshot=44990,
+                            discount_percent_snapshot=25,
+                            final_price_snapshot=33742.5,
+                            created_at=order1.created_at,
+                        ),
+                        OrderItem(
+                            order_id=order1.id,
+                            game_id=g2.id,
+                            game_title_snapshot=g2.title,
+                            unit_price_snapshot=8990,
+                            discount_percent_snapshot=0,
+                            final_price_snapshot=8990,
+                            created_at=order1.created_at,
+                        ),
+                        OrderItem(
+                            order_id=order2.id,
+                            game_id=g1.id,
+                            game_title_snapshot=g1.title,
+                            unit_price_snapshot=44990,
+                            discount_percent_snapshot=25,
+                            final_price_snapshot=33742.5,
+                            created_at=order2.created_at,
+                        ),
+                    ]
+                )
+                db.commit()
 
 
 if __name__ == "__main__":

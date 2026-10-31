@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,8 @@ from app.repositories.token_blacklist_repository import (
 )
 from app.repositories.user_repository import IUserRepository, get_user_repository
 
+logger = logging.getLogger(__name__)
+
 # Lee el token del header Authorization (también habilita el botón Authorize de Swagger)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -27,49 +30,51 @@ def utcnow() -> datetime:
 
 
 # --- Contraseñas ---
-# Genera el hash bcrypt (con salt incluido)
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-# Compara la contraseña ingresada con el hash guardado
 def verify_password(password: str, hashed_password: str) -> bool:
     try:
-        return bcrypt.checkpw(password.encode("utf-8"), hashed_password.encode("utf-8"))
+        return bcrypt.checkpw(
+            password.encode("utf-8"), hashed_password.encode("utf-8")
+        )
     except ValueError:
         return False
 
 
 # --- Códigos de verificación ---
-# Código aleatorio de 6 dígitos (secrets es más seguro que random)
 def generate_verification_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-# El código también se guarda hasheado (HMAC con la clave secreta)
 def hash_verification_code(code: str) -> str:
-    return hmac.new(settings.JWT_SECRET_KEY.encode("utf-8"), code.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(
+        settings.JWT_SECRET_KEY.encode("utf-8"),
+        code.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
-# compare_digest evita ataques por diferencia de tiempo
 def verify_verification_code(code: str, code_hash: str) -> bool:
     return hmac.compare_digest(hash_verification_code(code), code_hash)
 
 
 # --- JWT ---
-# sub = id del usuario, jti = id único del token (para la blacklist)
-def create_access_token(user_id: int) -> str:
+def create_access_token(user_id: int, role: str = "user") -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
+        "role": role,
         "jti": uuid.uuid4().hex,
         "iat": now,
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     }
-    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(
+        payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
+    )
 
 
-# Valida firma y expiración; exige que existan exp, sub y jti
 def decode_access_token(token: str) -> dict:
     return jwt.decode(
         token,
@@ -79,7 +84,7 @@ def decode_access_token(token: str) -> dict:
     )
 
 
-# --- Dependencias de autenticación ---
+# --- Dependencias de autenticación y autorización ---
 def _unauthorized(detail: str = "Token inválido o expirado") -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -88,10 +93,11 @@ def _unauthorized(detail: str = "Token inválido o expirado") -> HTTPException:
     )
 
 
-# Decodifica el token y revisa que no esté en la blacklist
 def get_token_payload(
     token: str = Depends(oauth2_scheme),
-    blacklist_repo: ITokenBlacklistRepository = Depends(get_token_blacklist_repository),
+    blacklist_repo: ITokenBlacklistRepository = Depends(
+        get_token_blacklist_repository
+    ),
 ) -> dict:
     try:
         payload = decode_access_token(token)
@@ -102,7 +108,6 @@ def get_token_payload(
     return payload
 
 
-# Devuelve el usuario dueño del token; se usa en las rutas protegidas
 def get_current_user(
     payload: dict = Depends(get_token_payload),
     user_repo: IUserRepository = Depends(get_user_repository),
@@ -114,4 +119,24 @@ def get_current_user(
     user = user_repo.get_by_id(user_id)
     if user is None or not user.is_verified:
         raise _unauthorized()
+    if not user.is_active:
+        logger.warning("Acceso denegado a cuenta suspendida: user_id=%s", user.id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tu cuenta ha sido suspendida",
+        )
     return user
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role != "admin":
+        logger.warning(
+            "Acceso administrativo denegado para usuario sin permisos: user_id=%s, role=%s",
+            current_user.id,
+            current_user.role,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado: se requieren permisos de administrador",
+        )
+    return current_user

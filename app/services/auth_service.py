@@ -100,7 +100,9 @@ class AuthService:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
         if not user.is_verified:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "La cuenta no ha sido verificada")
-        return TokenResponse(access_token=create_access_token(user.id))
+        if not user.is_active:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Tu cuenta ha sido suspendida")
+        return TokenResponse(access_token=create_access_token(user.id, user.role))
 
     # Guarda el jti del token en la blacklist hasta que expire
     def logout(self, payload: dict) -> str:
