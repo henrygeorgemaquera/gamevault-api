@@ -4,6 +4,7 @@ from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.schemas.catalog import ClassificationRead
+from app.utils.datetime_utils import UTCDatetime
 
 
 # --- Clasificaciones (Backoffice) ---
@@ -37,8 +38,8 @@ class GameCreate(BaseModel):
     release_date: Optional[date] = None
     price: float = Field(ge=0)
     discount_percent: int = Field(default=0, ge=0, le=100)
-    offer_start_date: Optional[datetime] = None
-    offer_end_date: Optional[datetime] = None
+    offer_start_date: Optional[UTCDatetime] = None
+    offer_end_date: Optional[UTCDatetime] = None
     classification_ids: List[int] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -62,8 +63,8 @@ class GameUpdate(BaseModel):
     release_date: Optional[date] = None
     price: Optional[float] = Field(default=None, ge=0)
     discount_percent: Optional[int] = Field(default=None, ge=0, le=100)
-    offer_start_date: Optional[datetime] = None
-    offer_end_date: Optional[datetime] = None
+    offer_start_date: Optional[UTCDatetime] = None
+    offer_end_date: Optional[UTCDatetime] = None
     is_active: Optional[bool] = None
     classification_ids: Optional[List[int]] = None
 
