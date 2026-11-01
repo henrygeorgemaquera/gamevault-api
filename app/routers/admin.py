@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile, status
@@ -18,6 +17,7 @@ from app.schemas.admin import (
 )
 from app.schemas.auth import MessageResponse
 from app.services.admin_service import AdminService
+from app.utils.datetime_utils import UTCDatetime
 from app.utils.security import require_admin
 
 router = APIRouter(
@@ -184,13 +184,13 @@ def reactivate_user(user_id: int, service: AdminService = Depends()):
 # --- Reporte de Popularidad (Más Deseados y Más Comprados en un Período) ---
 @router.get("/reports/popularity", response_model=PopularityReportResponse)
 def get_popularity_report(
-    start_date: Optional[datetime] = Query(
+    start_date: Optional[UTCDatetime] = Query(
         default=None,
-        description="Fecha/hora inicial del período (ISO 8601, ej: 2026-01-01T00:00:00Z)",
+        description="Fecha/hora inicial del período (ISO 8601, ej: 2026-01-01T00:00:00Z). Sin zona horaria se asume UTC",
     ),
-    end_date: Optional[datetime] = Query(
+    end_date: Optional[UTCDatetime] = Query(
         default=None,
-        description="Fecha/hora final del período (ISO 8601, ej: 2026-12-31T23:59:59Z)",
+        description="Fecha/hora final del período (ISO 8601, ej: 2026-12-31T23:59:59Z). Sin zona horaria se asume UTC",
     ),
     limit: int = Query(
         default=10, ge=1, le=50, description="Cantidad máxima de títulos en el ranking"
