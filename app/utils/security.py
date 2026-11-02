@@ -4,6 +4,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import bcrypt
 import jwt
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Lee el token del header Authorization (también habilita el botón Authorize de Swagger)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+# Igual que el anterior, pero sin error si no viene token (rutas para invitados)
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 
 def utcnow() -> datetime:
@@ -126,6 +129,20 @@ def get_current_user(
             detail="Tu cuenta ha sido suspendida",
         )
     return user
+
+
+# Sin token devuelve None (invitado); con un token inválido responde 401 como siempre
+def get_optional_user(
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    blacklist_repo: ITokenBlacklistRepository = Depends(
+        get_token_blacklist_repository
+    ),
+    user_repo: IUserRepository = Depends(get_user_repository),
+) -> Optional[User]:
+    if token is None:
+        return None
+    payload = get_token_payload(token, blacklist_repo)
+    return get_current_user(payload, user_repo)
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:

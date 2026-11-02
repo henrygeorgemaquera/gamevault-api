@@ -6,7 +6,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.config.database import create_db_and_tables
 from app.config.settings import settings
-from app.routers import admin, auth, catalog
+from app.routers import admin, auth, cart, catalog, orders, reviews, wishlist
 from app.utils.jobs import shutdown_scheduler, start_scheduler
 from app.utils.rate_limit import limiter
 from seed import run_seed
@@ -34,4 +34,8 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(auth.router)
 app.include_router(catalog.router)
+app.include_router(cart.router)
+app.include_router(orders.router)
+app.include_router(wishlist.router)
+app.include_router(reviews.router)
 app.include_router(admin.router)

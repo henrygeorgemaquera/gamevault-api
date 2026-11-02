@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, Request, status
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.config.settings import settings
@@ -11,10 +14,16 @@ from app.schemas.auth import (
     VerifyCodeRequest,
 )
 from app.services.auth_service import AuthService
+from app.services.cart_service import CartService
 from app.utils.rate_limit import limiter
-from app.utils.security import get_current_user, get_token_payload
+from app.utils.security import (
+    decode_access_token,
+    get_current_user,
+    get_token_payload,
+)
 
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
+logger = logging.getLogger(__name__)
 
 
 # slowapi necesita el parámetro "request" para saber la IP de quien llama
@@ -35,10 +44,24 @@ def verify(request: Request, data: VerifyCodeRequest, service: AuthService = Dep
 def login(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
+    x_cart_token: Optional[str] = Header(
+        default=None,
+        description="Token del carrito de invitado que se fusiona con el del usuario",
+    ),
     service: AuthService = Depends(),
+    cart_service: CartService = Depends(),
 ):
     # OAuth2 define el campo como "username"; aquí contiene el correo
-    return service.login(form_data.username, form_data.password)
+    token = service.login(form_data.username, form_data.password)
+
+    # Si venía un carrito de invitado, se fusiona; un fallo aquí no debe impedir el login
+    if x_cart_token:
+        try:
+            user_id = int(decode_access_token(token.access_token)["sub"])
+            cart_service.merge_guest_cart(user_id, x_cart_token)
+        except Exception:
+            logger.exception("No se pudo fusionar el carrito de invitado")
+    return token
 
 
 # Requiere token válido; el service lo agrega a la blacklist

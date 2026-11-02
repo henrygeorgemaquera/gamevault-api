@@ -16,6 +16,8 @@ class Order(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc), index=True
     )
+    # Fecha en que se envió la boleta por correo; evita enviarla dos veces
+    receipt_sent_at: Optional[datetime] = Field(default=None)
 
     items: List["OrderItem"] = Relationship(back_populates="order")
 
