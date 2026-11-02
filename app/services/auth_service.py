@@ -36,7 +36,9 @@ class AuthService:
         self,
         db: Session = Depends(get_db),
         user_repo: IUserRepository = Depends(get_user_repository),
-        blacklist_repo: ITokenBlacklistRepository = Depends(get_token_blacklist_repository),
+        blacklist_repo: ITokenBlacklistRepository = Depends(
+            get_token_blacklist_repository
+        ),
     ):
         self.db = db
         self.user_repo = user_repo
@@ -48,38 +50,66 @@ class AuthService:
         user = self.user_repo.get_by_email(email)
 
         if user is not None and user.is_verified:
-            raise HTTPException(status.HTTP_409_CONFLICT, "El correo ya está registrado")
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "El correo ya está registrado"
+            )
 
         if user is None:
             user = User(email=email, hashed_password=hash_password(data.password))
-        # Si ya existía sin verificar se deja su contraseña original y solo se reenvía el código
-        # (así nadie puede quedarse con un registro pendiente de otra persona)
 
         self._raise_if_locked(user)
         self._issue_code(user)
+        logger.info("Registro iniciado y código emitido: email=%s", email)
         return "Registro exitoso. Revisa tu correo para obtener el código de verificación"
 
     # Revisa el código: expiración, intentos y bloqueo
     def verify_code(self, data: VerifyCodeRequest) -> str:
         user = self.user_repo.get_by_email(data.email.lower())
         if user is None or user.is_verified:
+            logger.warning(
+                "Intento de verificación inválido: email=%s", data.email.lower()
+            )
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Código inválido")
 
         self._raise_if_locked(user)
 
         now = utcnow()
-        if not user.verification_code_hash or not user.code_expires_at or user.code_expires_at < now:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "El código expiró, solicita uno nuevo")
+        if (
+            not user.verification_code_hash
+            or not user.code_expires_at
+            or user.code_expires_at < now
+        ):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "El código expiró, solicita uno nuevo"
+            )
 
         if not verify_verification_code(data.code, user.verification_code_hash):
             user.code_attempts += 1
             # Al llegar al máximo se bloquea y se invalida el código
             if user.code_attempts >= settings.VERIFICATION_MAX_ATTEMPTS:
-                user.locked_until = now + timedelta(minutes=settings.VERIFICATION_LOCK_MINUTES)
+                user.locked_until = now + timedelta(
+                    minutes=settings.VERIFICATION_LOCK_MINUTES
+                )
                 user.code_attempts = 0
                 user.verification_code_hash = None
                 user.code_expires_at = None
+                self.user_repo.save(user)
+                logger.warning(
+                    "Cuenta bloqueada por superar intentos de verificación: user_id=%s, email=%s, locked_until=%s",
+                    user.id,
+                    user.email,
+                    user.locked_until,
+                )
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, "Código inválido"
+                )
             self.user_repo.save(user)
+            logger.warning(
+                "Código de verificación incorrecto: user_id=%s, intento=%s/%s",
+                user.id,
+                user.code_attempts,
+                settings.VERIFICATION_MAX_ATTEMPTS,
+            )
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Código inválido")
 
         # Código correcto: se verifica la cuenta y se limpian los datos del código
@@ -89,30 +119,70 @@ class AuthService:
         user.code_attempts = 0
         user.locked_until = None
         self.user_repo.save(user)
+        logger.info(
+            "Cuenta verificada exitosamente: user_id=%s, email=%s",
+            user.id,
+            user.email,
+        )
         return "Cuenta verificada correctamente"
 
     # Recibe correo y contraseña ya extraídos del formulario OAuth2
     def login(self, email: str, password: str) -> TokenResponse:
         user = self.user_repo.get_by_email(email.lower())
-        valid = verify_password(password, user.hashed_password if user else _DUMMY_HASH)
+        valid = verify_password(
+            password, user.hashed_password if user else _DUMMY_HASH
+        )
         # Mismo mensaje para correo o contraseña mala (no revela cuál falló)
         if user is None or not valid:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
+            logger.warning(
+                "Login fallido por credenciales inválidas: email=%s",
+                email.lower(),
+            )
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas"
+            )
         if not user.is_verified:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "La cuenta no ha sido verificada")
+            logger.warning(
+                "Login denegado a cuenta no verificada: user_id=%s", user.id
+            )
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "La cuenta no ha sido verificada"
+            )
         if not user.is_active:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Tu cuenta ha sido suspendida")
-        return TokenResponse(access_token=create_access_token(user.id, user.role))
+            logger.warning(
+                "Login denegado a cuenta suspendida: user_id=%s", user.id
+            )
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "Tu cuenta ha sido suspendida"
+            )
+        logger.info(
+            "Sesión iniciada: user_id=%s, role=%s", user.id, user.role
+        )
+        return TokenResponse(
+            access_token=create_access_token(user.id, user.role)
+        )
 
     # Guarda el jti del token en la blacklist hasta que expire
     def logout(self, payload: dict) -> str:
         expires_at = datetime.fromtimestamp(payload["exp"], timezone.utc)
-        self.blacklist_repo.add(payload["jti"], expires_at)
+        jti = payload["jti"]
+        if not self.blacklist_repo.exists(jti):
+            self.blacklist_repo.add(jti, expires_at)
+        logger.info(
+            "Sesión cerrada y token invalidado en blacklist: user_id=%s, jti=%s",
+            payload.get("sub"),
+            jti,
+        )
         return "Sesión cerrada correctamente"
 
     # Si locked_until está en el futuro, el usuario sigue bloqueado
     def _raise_if_locked(self, user: User) -> None:
         if user.locked_until and user.locked_until > utcnow():
+            logger.warning(
+                "Intento de verificación durante bloqueo activo: email=%s, locked_until=%s",
+                user.email,
+                user.locked_until,
+            )
             raise HTTPException(
                 status.HTTP_423_LOCKED,
                 "Demasiados intentos fallidos, intenta nuevamente más tarde",
@@ -122,7 +192,9 @@ class AuthService:
     def _issue_code(self, user: User) -> None:
         code = generate_verification_code()
         user.verification_code_hash = hash_verification_code(code)
-        user.code_expires_at = utcnow() + timedelta(minutes=settings.VERIFICATION_CODE_EXPIRE_MINUTES)
+        user.code_expires_at = utcnow() + timedelta(
+            minutes=settings.VERIFICATION_CODE_EXPIRE_MINUTES
+        )
         user.code_attempts = 0
         user.locked_until = None
         self.user_repo.save(user)
